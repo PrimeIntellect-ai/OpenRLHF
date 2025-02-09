@@ -2,7 +2,7 @@ import time
 from abc import ABC
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Dict
 
 import ray
 import torch
@@ -152,7 +152,7 @@ class NaiveExperienceMaker(ABC):
         # custom reward func for reinforced finetuning
         self.custom_reward_func = None
         if remote_rm_url and remote_rm_url[0].endswith(".py"):
-            print(f"Loading custom `reward_func(queries, prompts)` from {remote_rm_url[0]}")
+            print(f"Loading custom `reward_func(queries, prompts, reward_info)` from {remote_rm_url[0]}")
             import importlib.util
 
             spec = importlib.util.spec_from_file_location("reward_func", remote_rm_url[0])
@@ -181,7 +181,7 @@ class NaiveExperienceMaker(ABC):
         return {k: v.to(device) for k, v in batch.items()}
 
     @torch.no_grad()
-    def make_experience_list(self, all_prompts: Union[str, List[str]], **generate_kwargs) -> List[Experience]:
+    def make_experience_list(self, all_prompts: Union[str, List[str]], reward_infos: Union[Dict, List[Dict]], **generate_kwargs) -> List[Experience]:
         """
         Make a list of experience with the micro_rollout_batch_size.
 
@@ -190,17 +190,34 @@ class NaiveExperienceMaker(ABC):
         After that, we will calculate the advantages and returns for each experience.
         """
         args = self.strategy.args
-        # generate responses
+        
+        if args.n_samples_per_prompt > 1:
+            expanded_reward_infos = []
+            for info in reward_infos:
+                expanded_reward_infos.extend([info] * args.n_samples_per_prompt)
+            reward_infos = expanded_reward_infos
+
         samples_list = self.generate_samples(all_prompts, **generate_kwargs)
+
+        reshaped_reward_infos = []
+        reward_info_index = 0
+        for samples in samples_list:
+            batch_size = len(samples.prompts)
+            batch_reward_infos = reward_infos[reward_info_index:reward_info_index + batch_size]
+            reshaped_reward_infos.append(batch_reward_infos)
+            reward_info_index += batch_size
+            
+
         torch.distributed.barrier()
 
         experiences = []
-        for samples in tqdm(
-            samples_list,
+        for samples, batch_reward_infos in tqdm(
+            zip(samples_list, reshaped_reward_infos),
             desc="make_experience",
             disable=not self.strategy.is_rank_0(),
         ):
-            experiences.append(self.make_experience(samples).to_device("cpu"))
+            
+            experiences.append(self.make_experience(samples, batch_reward_infos).to_device("cpu"))
 
         experiences, rewards = self.process_experiences(experiences)
 
@@ -279,7 +296,7 @@ class NaiveExperienceMaker(ABC):
         return samples_list
 
     @torch.no_grad()
-    def make_experience(self, samples: Samples) -> Experience:
+    def make_experience(self, samples: Samples, reward_infos: List[Dict]) -> Experience:
         """
         Turn samples into experience by calculating logprobs, values, rewards, and kl divergence.
         """
@@ -313,7 +330,7 @@ class NaiveExperienceMaker(ABC):
             # remote RM
             queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
             if self.custom_reward_func:
-                r = self.custom_reward_func(queries, samples.prompts).to(device=action_log_probs.device)
+                r = self.custom_reward_func(queries, samples.prompts, reward_infos).to(device=action_log_probs.device)
             else:
                 r = remote_rm_fn(self.remote_rm_url, queries=queries, prompts=samples.prompts).to(
                     device=action_log_probs.device
@@ -487,14 +504,14 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             self.custom_reward_func = ray.remote(self.custom_reward_func)
 
     @torch.no_grad()
-    def make_experience_list(self, all_prompts: Union[str, List[str]], **generate_kwargs) -> List[Experience]:
+    def make_experience_list(self, all_prompts: Union[str, List[str]], reward_infos: Union[Dict, List[Dict]], **generate_kwargs) -> List[Experience]:
         if self.strategy.args.perf:
             self.perf_stats = {
                 "generate_time": 0,
                 "actor_value_rm_time": 0,
                 "wait_time": 0,
             }
-        experiences = super().make_experience_list(all_prompts, **generate_kwargs)
+        experiences = super().make_experience_list(all_prompts, reward_infos, **generate_kwargs)
         if self.critic is not None:
             for experience in experiences:
                 # send experience to critic
@@ -527,7 +544,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         return samples
 
     @torch.no_grad()
-    def make_experience(self, samples: Samples) -> Experience:
+    def make_experience(self, samples: Samples, reward_infos: List[Dict]) -> Experience:
         """
         Turn samples into experience by calculating logprobs, values, rewards, and kl divergence.
         """
@@ -593,7 +610,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 queries = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
 
             if self.custom_reward_func:
-                r = self.custom_reward_func.remote(queries, samples.prompts)
+                r = self.custom_reward_func.remote(queries, samples.prompts, reward_infos)
                 r_refs.append(r)
             else:
                 for rm in self.remote_rm_url:
