@@ -23,7 +23,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --micro_rollout_batch_size 8 \
    --rollout_batch_size 256 \
    --n_samples_per_prompt 8 \
-   --max_samples 100000 \
+   --max_samples 1000000 \
    --max_epochs 1 \
    --prompt_max_len 1024 \
    --generate_max_len 6000 \
@@ -46,8 +46,10 @@ ray job submit --address="http://127.0.0.1:8265" \
    --advantage_estimator rloo \
    --temperature 0.8 \
    --top_p 0.95 \
-   --save_steps 4 \
+   --save_steps 20 \
    --save_hf_ckpt \
+   --ckpt_path /workspace/reasoning/intellect/outputs/rl-checkpoints/${SAVE_FOLDER} \
+   --max_ckpt_num 1000
 
 
 # --runtime-env-json='{"setup_commands": ["pip install openrlhf[vllm]"]}' [Install deps]
