@@ -1,8 +1,7 @@
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-
-def preprocess_data(data, input_template=None, input_key="input", apply_chat_template=None) -> str:
+def preprocess_data(data, input_template=None, input_key="input", reward_info_key=None, apply_chat_template=None) -> str:
     if apply_chat_template:
         chat = data[input_key]
         if isinstance(chat, str):
@@ -12,7 +11,11 @@ def preprocess_data(data, input_template=None, input_key="input", apply_chat_tem
         prompt = data[input_key]
         if input_template:
             prompt = input_template.format(prompt)
-    return prompt
+    if reward_info_key:
+        reward_info = str(data[reward_info_key]) 
+    else:
+        reward_info = None
+    return prompt, reward_info
 
 
 class PromptDataset(Dataset):
@@ -35,6 +38,7 @@ class PromptDataset(Dataset):
         super().__init__()
         self.strategy = strategy
         self.tokenizer = tokenizer
+        self.reward_info_key = getattr(self.strategy.args, "reward_info_key", None)
 
         # chat_template
         self.input_template = input_template
@@ -45,13 +49,15 @@ class PromptDataset(Dataset):
             apply_chat_template = self.tokenizer.apply_chat_template
 
         self.prompts = []
+        self.reward_infos = []
         for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
-            prompt = preprocess_data(data, input_template, input_key, apply_chat_template)
+            prompt, reward_info = preprocess_data(data, input_template, input_key, self.reward_info_key, apply_chat_template)
             self.prompts.append(prompt)
-
+            self.reward_infos.append(reward_info)
+            
     def __len__(self):
         length = len(self.prompts)
         return length
 
-    def __getitem__(self, idx):
-        return self.prompts[idx]
+    def __getitem__(self, idx):        
+        return self.prompts[idx], self.reward_infos[idx]
