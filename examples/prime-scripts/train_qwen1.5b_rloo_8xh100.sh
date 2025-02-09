@@ -1,7 +1,7 @@
 set -x 
 
 RANDOM_ID=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 6 | head -n 1)
-RUN_NAME="qwen_instruct_3b_MATH_rloo_run_${RANDOM_ID}"
+RUN_NAME="qwen_instruct_1.5b_MATH_rloo_run_${RANDOM_ID}"
 
 export HF_TOKEN="/workspace"
 
@@ -18,7 +18,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --pretrain Qwen/Qwen2.5-1.5B-Instruct \
    --save_path /workspace/reasoning/intellect/outputs/checkpoints/${SAVE_FOLDER} \
    --remote_rm_url /workspace/reasoning/intellect/OpenRLHF/openrlhf/reward_functions/math.py \
-   --micro_train_batch_size 32 \
+   --micro_train_batch_size 16 \
    --train_batch_size 128 \
    --micro_rollout_batch_size 8 \
    --rollout_batch_size 256 \
